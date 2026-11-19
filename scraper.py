@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import requests
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -16,22 +17,23 @@ def extract_asin(url: str) -> str | None:
     return match.group(1) if match else None
 
 def fetch_amazon_ae_data(asin: str) -> dict:
-    """Rainforest API를 통해 UAE 현지 기준으로 Buy Box 가격 및 판매자를 다중 추적"""
     if not SCRAPER_API_KEY:
         return {
             "title": None,
             "buybox_price": None,
-            "buybox_seller": "수집 API 키 미설정 (연결 대기)",
+            "buybox_seller": "수집 API 키 미설정",
             "lowest_offer_price": None,
             "status": "NO_API_KEY"
         }
 
+    # UAE 현지(두바이) 접속 기준으로 Buy Box 노출 강제
     params = {
         "api_key": SCRAPER_API_KEY,
         "type": "product",
         "amazon_domain": "amazon.ae",
         "asin": asin,
-        "customer_location": "ae"  # UAE 현지 배송 기준으로 강제 조회
+        "customer_location": "ae",
+        "language": "en_AE"
     }
 
     try:
@@ -43,7 +45,7 @@ def fetch_amazon_ae_data(asin: str) -> dict:
             return {
                 "title": None,
                 "buybox_price": None,
-                "buybox_seller": f"API 오류: {err_msg[:30]}",
+                "buybox_seller": f"API 오류: {err_msg}",
                 "lowest_offer_price": None,
                 "status": "API_ERROR"
             }
@@ -53,31 +55,39 @@ def fetch_amazon_ae_data(asin: str) -> dict:
         price_info = buybox.get("price", {})
         seller_info = buybox.get("seller", {})
         fulfillment = buybox.get("fulfillment", {})
+        third_party = fulfillment.get("third_party_seller", {})
         more_buying = product.get("more_buying_choices", [])
 
-        # --- 판매자 이름 4단계 추적 로직 ---
-        seller_name = seller_info.get("name")
+        # --- 판매자 이름 다중 경로 추적 ---
+        seller_name = (
+            seller_info.get("name")
+            or third_party.get("name")
+        )
 
-        # 1단계: Amazon.ae 공식 직매입 여부 확인
-        if not seller_name:
-            if fulfillment.get("is_sold_by_amazon") or buybox.get("is_amazon_fulfilled") and not seller_info:
-                seller_name = "Amazon.ae"
+        # Amazon.ae 직매입인 경우
+        if not seller_name and fulfillment.get("is_sold_by_amazon"):
+            seller_name = "Amazon.ae"
 
-        # 2단계: merchant_info 텍스트에서 추출 (예: "Sold by XYZ and Fulfilled by Amazon")
-        if not seller_name and product.get("merchant_info"):
-            seller_name = product.get("merchant_info")
+        # merchant_info 텍스트에서 "Sold by XXX" 파싱 (예: "Ships from Amazon.ae. Sold by VT Cosmetics UAE.")
+        merchant_info = product.get("merchant_info", "")
+        if not seller_name and merchant_info:
+            sold_match = re.search(r"Sold by\s+([^.]+)", merchant_info)
+            seller_name = sold_match.group(1).strip() if sold_match else merchant_info
 
-        # 3단계: more_buying_choices 첫 번째 판매자에서 추출
+        # more_buying_choices 첫 번째 판매자 확인
         if not seller_name and more_buying:
-            first_seller = more_buying[0].get("seller", {}).get("name")
-            if first_seller:
-                seller_name = first_seller
+            seller_name = more_buying[0].get("seller", {}).get("name")
 
-        # 4단계: 가격은 있는데 판매자명만 누락된 경우
+        # 여전히 비어있을 경우 원본 구조 출력
         if not seller_name:
-            seller_name = "판매자 미표기 (품절 또는 옵션 선택 필요)"
+            debug_info = {
+                "buybox_keys": list(buybox.keys()),
+                "fulfillment": fulfillment,
+                "merchant_info": merchant_info,
+                "avail": buybox.get("availability", {}).get("raw")
+            }
+            seller_name = f"진단: {json.dumps(debug_info, ensure_ascii=False)[:250]}"
 
-        # 최저가 Offer 계산
         offer_prices = [item.get("price", {}).get("value") for item in more_buying if item.get("price", {}).get("value")]
         lowest_offer = min(offer_prices) if offer_prices else price_info.get("value")
 
@@ -93,7 +103,7 @@ def fetch_amazon_ae_data(asin: str) -> dict:
         return {
             "title": None,
             "buybox_price": None,
-            "buybox_seller": f"오류: {str(e)[:30]}",
+            "buybox_seller": f"오류: {str(e)[:50]}",
             "lowest_offer_price": None,
             "status": "ERROR"
         }
