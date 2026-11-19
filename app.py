@@ -36,6 +36,7 @@ col2.metric("추적 상태", "10분 자동 수집 중" if products else "대기 
 
 st.divider()
 
+# 1. 상품 URL 등록
 with st.expander("➕ 새 상품 URL 등록하기", expanded=(len(products) == 0)):
     with st.form("add_product_form", clear_on_submit=True):
         url_input = st.text_input("Amazon.ae 상품 URL 붙여넣기", placeholder="https://www.amazon.ae/dp/B0XXXXXXXX")
@@ -59,16 +60,20 @@ with st.expander("➕ 새 상품 URL 등록하기", expanded=(len(products) == 0
                     except Exception:
                         st.warning("이미 등록된 상품이거나 저장 중 오류가 발생했습니다.")
 
-st.subheader("📊 Buy Box 모니터링")
-
 if not products:
+    st.subheader("📊 Buy Box 모니터링")
     st.info("아직 등록된 상품이 없습니다. 위 칸에 amazon.ae 상품 주소를 넣어보세요.")
 else:
+    # 수동 수집 버튼
     if st.button("🔄 지금 즉시 수동 수집 실행", use_container_width=True):
         with st.spinner("데이터 확인 중..."):
             run_batch_update()
         st.success("수집 기록이 저장되었습니다.")
         st.rerun()
+
+    # 모든 상품의 최신 이력 미리 불러오기 (요약 표 + 상세 카드 공용)
+    product_histories = {}
+    summary_rows = []
 
     for p in products:
         asin = p["asin"]
@@ -81,6 +86,36 @@ else:
             .execute()
         )
         history = hist_res.data or []
+        product_histories[asin] = history
+        latest = history[0] if history else None
+
+        # 요약 표 행 데이터 구성
+        short_title = p["title"][:35] + "..." if len(p["title"]) > 35 else p["title"]
+        bb_price = f"AED {latest['buybox_price']}" if (latest and latest["buybox_price"] is not None) else "-"
+        low_offer = f"AED {latest['lowest_offer_price']}" if (latest and latest["lowest_offer_price"] is not None) else "-"
+        bb_seller = latest["buybox_seller"] if latest else "수집 대기 중"
+
+        summary_rows.append({
+            "제품이름": short_title,
+            "Buy Box 가격": bb_price,
+            "최저 Offer": low_offer,
+            "제품코드": asin,
+            "Buy Box 판매자": bb_seller
+        })
+
+    # 2. 전체 상품 요약 표 (Summary Table)
+    st.subheader("📋 전체 상품 요약 (Summary)")
+    summary_df = pd.DataFrame(summary_rows)
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # 3. 개별 상품 상세 Buy Box 모니터링
+    st.subheader("📊 Buy Box 상세 모니터링")
+
+    for p in products:
+        asin = p["asin"]
+        history = product_histories.get(asin, [])
         latest = history[0] if history else None
 
         with st.container(border=True):
@@ -89,8 +124,8 @@ else:
 
             if latest:
                 c1, c2, c3 = st.columns(3)
-                price_str = f"AED {latest['buybox_price']}" if latest["buybox_price"] else "-"
-                offer_str = f"AED {latest['lowest_offer_price']}" if latest["lowest_offer_price"] else "-"
+                price_str = f"AED {latest['buybox_price']}" if latest["buybox_price"] is not None else "-"
+                offer_str = f"AED {latest['lowest_offer_price']}" if latest["lowest_offer_price"] is not None else "-"
 
                 c1.metric("Buy Box 가격", price_str)
                 c2.metric("최저 Offer", offer_str)
