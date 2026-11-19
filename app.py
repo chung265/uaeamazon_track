@@ -15,6 +15,8 @@ if "SUPABASE_URL" in st.secrets:
     os.environ["SUPABASE_URL"] = st.secrets["SUPABASE_URL"]
 if "SUPABASE_KEY" in st.secrets:
     os.environ["SUPABASE_KEY"] = st.secrets["SUPABASE_KEY"]
+if "SCRAPER_API_KEY" in st.secrets:
+    os.environ["SCRAPER_API_KEY"] = st.secrets["SCRAPER_API_KEY"]
 
 try:
     supabase = get_supabase()
