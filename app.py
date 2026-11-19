@@ -17,7 +17,7 @@ def extract_asin(url: str):
     return match.group(1) if match else None
 
 st.title("🇦🇪 Amazon UAE Buy Box Tracker")
-st.caption("Marketplace: amazon.ae | Currency: AED | Interval: 30 min")
+st.caption("Marketplace: amazon.ae | Currency: AED | Interval: 10 min")
 
 col1, col2 = st.columns(2)
 col1.metric("등록 상품", f"{len(st.session_state.products)} / 50")
