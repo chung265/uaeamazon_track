@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import requests
 from datetime import datetime, timezone
 from supabase import create_client, Client
@@ -26,7 +25,6 @@ def fetch_amazon_ae_data(asin: str) -> dict:
             "status": "NO_API_KEY"
         }
 
-    # UAE 현지(두바이) 접속 기준으로 Buy Box 노출 강제
     params = {
         "api_key": SCRAPER_API_KEY,
         "type": "product",
@@ -58,45 +56,54 @@ def fetch_amazon_ae_data(asin: str) -> dict:
         third_party = fulfillment.get("third_party_seller", {})
         more_buying = product.get("more_buying_choices", [])
 
-        # --- 판매자 이름 다중 경로 추적 ---
-        seller_name = (
-            seller_info.get("name")
-            or third_party.get("name")
-        )
+        # 1. 가격 추출 (메인 Buy Box 가격 -> 없으면 new_offers_from 최저가 대체)
+        bb_price = price_info.get("value")
+        new_offers_from = buybox.get("new_offers_from", {}).get("value")
 
-        # Amazon.ae 직매입인 경우
+        offer_prices = [item.get("price", {}).get("value") for item in more_buying if item.get("price", {}).get("value")]
+        lowest_offer = min(offer_prices) if offer_prices else (new_offers_from or bb_price)
+
+        # 2. 판매자 이름 다중 추적
+        seller_name = seller_info.get("name") or third_party.get("name")
+
         if not seller_name and fulfillment.get("is_sold_by_amazon"):
             seller_name = "Amazon.ae"
 
-        # merchant_info 텍스트에서 "Sold by XXX" 파싱 (예: "Ships from Amazon.ae. Sold by VT Cosmetics UAE.")
         merchant_info = product.get("merchant_info", "")
         if not seller_name and merchant_info:
             sold_match = re.search(r"Sold by\s+([^.]+)", merchant_info)
             seller_name = sold_match.group(1).strip() if sold_match else merchant_info
 
-        # more_buying_choices 첫 번째 판매자 확인
+        # 메인 Buy Box가 숨겨진 경우(Suppressed) -> more_buying_choices 첫 번째 판매자로 대체
         if not seller_name and more_buying:
-            seller_name = more_buying[0].get("seller", {}).get("name")
+            first_seller = more_buying[0].get("seller", {}).get("name")
+            if first_seller:
+                seller_name = f"{first_seller} (오퍼 1위)"
 
-        # 여전히 비어있을 경우 원본 구조 출력
-        if not seller_name:
-            debug_info = {
-                "buybox_keys": list(buybox.keys()),
-                "fulfillment": fulfillment,
-                "merchant_info": merchant_info,
-                "avail": buybox.get("availability", {}).get("raw")
-            }
-            seller_name = f"진단: {json.dumps(debug_info, ensure_ascii=False)[:250]}"
+        # 3. 상태 및 최종 예외 문구 정리
+        offers_count = buybox.get("new_offers_count", 0)
+        in_cart_only = buybox.get("price_only_available_in_cart", False)
 
-        offer_prices = [item.get("price", {}).get("value") for item in more_buying if item.get("price", {}).get("value")]
-        lowest_offer = min(offer_prices) if offer_prices else price_info.get("value")
+        if bb_price is not None:
+            status = "SUCCESS"
+            if not seller_name:
+                seller_name = "Amazon.ae (직매입 추정)" if buybox.get("is_prime") else "판매자 미표기"
+        elif in_cart_only:
+            status = "IN_CART_ONLY"
+            seller_name = seller_name or "장바구니 가격확인 상품"
+        elif offers_count > 0 or lowest_offer is not None:
+            status = "NO_BUYBOX_OFFERS"
+            seller_name = seller_name or f"Buy Box 없음 (판매자 {offers_count}명 경쟁 중)"
+        else:
+            status = "OUT_OF_STOCK"
+            seller_name = "품절 (재고 없음)"
 
         return {
             "title": product.get("title"),
-            "buybox_price": price_info.get("value"),
+            "buybox_price": bb_price,
             "buybox_seller": seller_name,
             "lowest_offer_price": lowest_offer,
-            "status": "SUCCESS" if price_info.get("value") else "OUT_OF_STOCK"
+            "status": status
         }
 
     except Exception as e:
